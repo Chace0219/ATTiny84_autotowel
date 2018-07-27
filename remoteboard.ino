@@ -55,86 +55,54 @@ void saveConfig() {
 #define OPTICALPIN 11
 #define IRLED   8 
 
-
-uint8_t currLevel = 0;
-TON sw1Ton(250);
-TON sw2Ton(250);
-Rtrg sw1Trg, sw2Trg;
+TON outerShort(250);
+TON centerShort(250);
+TON centerLong(2000);
+Rtrg outerShortTrg, centerShortTrg, centerLongTrg;
 
 State idle(NULL);
-State tslActive(NULL);
-State motorActive(NULL);
-FiniteStateMachine controlMachine(idle);
+State active(NULL);
+FiniteStateMachine stateMachine(idle);
 
-void driveLed(uint8_t index, bool bTurnOn)
+#define MANUAL false
+#define AUTO true
+bool actMode = MANUAL;
+
+void triggerLed(bool red, bool green, bool blue)
 {
-    if (!bTurnOn)
-    {
-        digitalWrite(LEDSPIN, LOW);
+    /*
+    digitalWrite(LEDSPIN, HIGH);
+    if (red)
         digitalWrite(REDPIN, LOW);
-        digitalWrite(GREENPIN, LOW);
-        digitalWrite(BLUEPIN, LOW);
-    }
     else
-    {
-        switch (index)
-        {
+        digitalWrite(REDPIN, HIGH);
 
-        case 0:
-        {
-            digitalWrite(LEDSPIN, HIGH);
-            digitalWrite(REDPIN, LOW);
-            digitalWrite(GREENPIN, HIGH);
-            digitalWrite(BLUEPIN, HIGH);
-        }
-        break;
+    if (green)
+        digitalWrite(GREENPIN, LOW);
+    else
+        digitalWrite(GREENPIN, HIGH);
 
-        case 1:
-        {
-            digitalWrite(LEDSPIN, HIGH);
-            digitalWrite(REDPIN, HIGH);
-            digitalWrite(GREENPIN, LOW);
-            digitalWrite(BLUEPIN, HIGH);
-        }
-        break;
+    if (blue)
+        digitalWrite(BLUEPIN, LOW);
+    else
+        digitalWrite(BLUEPIN, HIGH);
+        */
+    
+    digitalWrite(LEDSPIN, LOW);
+    if(red)
+        digitalWrite(REDPIN, HIGH);
+    else
+        digitalWrite(REDPIN, LOW);
 
-        case 2:
-        {
-            digitalWrite(LEDSPIN, HIGH);
-            digitalWrite(REDPIN, HIGH);
-            digitalWrite(GREENPIN, HIGH);
-            digitalWrite(BLUEPIN, LOW);
-        }
-        break;
+    if (green)
+        digitalWrite(GREENPIN, HIGH);
+    else
+        digitalWrite(GREENPIN, LOW);
 
-        case 3:
-        {
-            digitalWrite(LEDSPIN, LOW);
-            digitalWrite(REDPIN, HIGH);
-            digitalWrite(GREENPIN, LOW);
-            digitalWrite(BLUEPIN, LOW);
-        }
-        break;
-
-        case 4:
-        {
-            digitalWrite(LEDSPIN, LOW);
-            digitalWrite(REDPIN, LOW);
-            digitalWrite(GREENPIN, HIGH);
-            digitalWrite(BLUEPIN, LOW);
-        }
-        break;
-
-        case 5:
-        {
-            digitalWrite(LEDSPIN, LOW);
-            digitalWrite(REDPIN, LOW);
-            digitalWrite(GREENPIN, LOW);
-            digitalWrite(BLUEPIN, HIGH);
-        }
-        break;
-        }
-    }
+    if (blue)
+        digitalWrite(BLUEPIN, HIGH);
+    else
+        digitalWrite(BLUEPIN, LOW);// */
 }
 
 // 
@@ -167,156 +135,86 @@ void setup()
 
     powerSensor(true);
     delay(100);
-
     if (!vl.begin()) 
     {
     }
 }
 
-
 bool lastIRStatus = false;
-uint8_t ledIdx = 0;
 
 void loop()
 {
-    /*
-    static uint32_t lastIRLedTime = millis();
-    if (millis() - lastIRLedTime > 500)
-    {
-    lastIRLedTime = millis();
-    if (lastIRStatus)
-    {
-    // driveLed(1, LOW);
-    lastIRStatus = false;
-    }
-    else
-    {
-    // driveLed(1, HIGH);
-    lastIRStatus = true;
-    }
-    }
-
-    digitalWrite(IRLED, lastIRStatus);
-    driveLed(1, HIGH);
-    */
-
-    /*
-    if (digitalRead(OPTICALPIN) == HIGH)
-    driveLed(1, HIGH);
-    else
-    driveLed(1, LOW);
-    */
-    // */
-
-
-    /*
-    driveLed(currLevel, HIGH);
-
+    triggerLed(true, true, true);
     // button proc
     static uint16_t buttonADC = 0;
     buttonADC = analogRead(BUTTONS);
-    sw1Ton.IN = buttonADC > 450 && buttonADC < 750;
-    sw1Ton.update();
-    sw1Trg.IN = sw1Ton.Q;
-    sw1Trg.update();
-    if (sw1Trg.Q)
+
+    digitalWrite(LEDSPIN, LOW);
+    digitalWrite(GREENPIN, LOW);
+    outerShort.IN = buttonADC > 450 && buttonADC < 750;
+    outerShort.update();
+    outerShortTrg.IN = outerShort.Q;
+    outerShortTrg.update();
+    if (outerShortTrg.Q)
     {
-    if(currLevel < 2)
-    currLevel++;
+        // digitalWrite(LEDSPIN, LOW);
+        // digitalWrite(GREENPIN, HIGH);
+    }
+    /*
+    if ((outerShort.Q && stateMachine.isInState(active)) && actMode == MANUAL)
+    {
+        driveMotor(true);
+        stateMachine.resetTime();
+    }
+    else
+        driveMotor(false);
+    */
+
+    centerShort.IN = buttonADC < 200;
+    centerShort.update();
+    centerShortTrg.IN = centerShort.Q;
+    centerShortTrg.update();
+    if (centerShortTrg.Q)
+    {
+        digitalWrite(LEDSPIN, HIGH);
+        digitalWrite(GREENPIN, LOW);
+
+        // CENTER BUTTON
+        // stateMachine.transitionTo(active);
     }
 
-    sw2Ton.IN = buttonADC < 200;
-    sw2Ton.update();
-    sw2Trg.IN = sw2Ton.Q;
-    sw2Trg.update();
-    if (sw2Trg.Q)
+    centerLong.IN = buttonADC < 100;
+    centerLong.update();
+    centerLongTrg.IN = centerLong.Q;
+    centerLongTrg.update();
+    if (centerLongTrg.Q)
     {
-    if (currLevel > 0)
-    currLevel--;
+        // CENTER button long pressed
+        
     }
 
-    if (controlMachine.isInState(idle))
+    /*
+    if (stateMachine.isInState(active))
     {
-    digitalWrite(TSL_VDD, LOW);
-    pinMode(IRLED, OUTPUT);
-    digitalWrite(IRLED, HIGH);
-    digitalWrite(MOTOR, LOW);
-
-
-    if (controlMachine.timeInCurrentState() > 250)
-    {
-    digitalWrite(TSL_VDD, HIGH);
-    digitalWrite(IRLED, LOW);
-    pinMode(IRLED, INPUT);
-    delay(50);
-    configureSensor();
-    controlMachine.transitionTo(tslActive);
+        if (actMode == AUTO)
+            triggerLed(false, true, true);
+        else // manual mode
+            triggerLed(true, false, false);
+        
+        if (stateMachine.timeInCurrentState() > 4000)
+            stateMachine.transitionTo(idle);
     }
-    }
-    else if (controlMachine.isInState(tslActive))
+    else if(stateMachine.isInState(idle))
     {
-    digitalWrite(TSL_VDD, HIGH);
-    digitalWrite(MOTOR, LOW);
-    if (digitalRead(IRLED))
-    {
-    controlMachine.transitionTo(motorActive);
-    }
-    else if (controlMachine.timeInCurrentState() > 250)
-    {
-    digitalWrite(TSL_VDD, LOW);
-    pinMode(IRLED, OUTPUT);
-    digitalWrite(IRLED, HIGH);
-    controlMachine.transitionTo(idle);
-    }
-    }
-    else if (controlMachine.isInState(motorActive))
-    {
-    digitalWrite(TSL_VDD, LOW);
-    pinMode(IRLED, OUTPUT);
-    digitalWrite(IRLED, LOW);
-    digitalWrite(MOTOR, HIGH);
+        triggerLed(false, false, false);
     }
     */
 
-    static uint32_t checkSensorTime = millis();
-    if (millis() - checkSensorTime > 10)
-    {
-        uint8_t range = vl.readRange();
-        uint8_t status = vl.readRangeStatus();
-
-        digitalWrite(LEDSPIN, LOW);
-        digitalWrite(REDPIN, LOW);
-        digitalWrite(BLUEPIN, LOW);
-        if (status == VL6180X_ERROR_NONE)
-        {
-            uint8_t pwmValue = map(range, 30, 150, 0, 255);
-            analogWrite(GREENPIN, pwmValue);
-            if (range < 100)
-            {
-                if (controlMachine.isInState(idle))
-                    controlMachine.transitionTo(motorActive);
-            }
-        }
-        else
-        {
-            digitalWrite(GREENPIN, LOW);
-            if (controlMachine.isInState(motorActive))
-                controlMachine.transitionTo(idle);
-        }
-        checkSensorTime = millis();
-    }
-
-    if (controlMachine.isInState(motorActive))
-    {
-        if (controlMachine.timeInCurrentState() < 2000)
-            digitalWrite(MOTOR, HIGH);
-        else
-            digitalWrite(MOTOR, LOW);
-    }
-    else
-    {
-        digitalWrite(MOTOR, LOW);
-    }
-    controlMachine.update();
+    // 
+    stateMachine.update();
 }
 
+void driveMotor(bool action)
+{
+    digitalWrite(MOTOR, action);
+}
