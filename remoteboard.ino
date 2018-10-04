@@ -1,14 +1,4 @@
 
-/*
-Alpha Phase - Remaining Changes:
-
-"Lift to turn off" function + 20 second timer
-Setting LED to stay on full brightness during grinding (auto or manual grinding) and 5 seconds afterward (fast fade on + slow fade off)
-Setting LED to stay on full brightness for 10 seconds after changing settings (fast fade on + slow fade off)
-Debounce settings button
-Settings light turns off during manual grinding, takes a few seconds to come back on (auto LED flashes once)
-Sometimes the device will only briefly grind when the manual grind button is held down
-*/
 #include <Wire.h>
 #include "FBD.h"
 #include <avr/io.h>
@@ -20,17 +10,17 @@ Sometimes the device will only briefly grind when the manual grind button is hel
 #include "Adafruit_VL6180X.h"
 #include "SoftPWM.h"
 
-#define LIFTTURNOFF 20000
-#define DEBOUNCETIME 100 // ms unit
+#define LIFTTURNOFF 60 // mm lift until shutoff
+#define DEBOUNCETIME 50 // ms unit
 
 #define NONEACTIONINTERVAL 5000 // ms unit
 #define ACTIVEDELAY 5000 // ms unit
-#define SETTINGDELAY 10000 // ms unit
+#define SETTINGDELAY 2000 // ms unit
 
 bool motorStatus = false;
 bool motorWorked = false;
 
-//#define DEBUGSERIAL
+#define DEBUGSERIAL
 #ifdef DEBUGSERIAL
 #include <SoftwareSerial.h>
 SoftwareSerial mySerial(255, 5); // RX, TX
@@ -40,37 +30,10 @@ SoftwareSerial mySerial(255, 5); // RX, TX
 SOFTPWM_DEFINE_CHANNEL(2, DDRA, PORTA, PORTA7);
 SOFTPWM_DEFINE_CHANNEL(0, DDRB, PORTB, PORTB0);
 SOFTPWM_DEFINE_CHANNEL(1, DDRB, PORTB, PORTB1);
-#ifndef DEBUGSERIAL
-SOFTPWM_DEFINE_CHANNEL(3, DDRA, PORTA, PORTA5);
-#endif
 SOFTPWM_DEFINE_OBJECT_WITH_PWM_LEVELS(5, 100);
 SOFTPWM_DEFINE_EXTERN_OBJECT_WITH_PWM_LEVELS(5, 100);
 
 Adafruit_VL6180X vl = Adafruit_VL6180X();
-#define CONFIG_VERSION "ls1"
-#define CONFIG_START 32
-struct StoreStruct {
-    char version[4];
-    // The variables of your settings
-    uint32_t motorActTime; // ms unit
-} setting = {
-    CONFIG_VERSION,
-    // The default values
-    2000
-};
-
-void loadConfig() {
-    if (EEPROM.read(CONFIG_START + 0) == CONFIG_VERSION[0] &&
-        EEPROM.read(CONFIG_START + 1) == CONFIG_VERSION[1] &&
-        EEPROM.read(CONFIG_START + 2) == CONFIG_VERSION[2])
-        for (unsigned int t = 0; t<sizeof(setting); t++)
-            *((char*)&setting + t) = EEPROM.read(CONFIG_START + t);
-}
-
-void saveConfig() {
-    for (unsigned int t = 0; t<sizeof(setting); t++)
-        EEPROM.write(CONFIG_START + t, *((char*)&setting + t));
-}
 
 #define VBATPIN   0
 #define BUTTONS   1
@@ -85,6 +48,7 @@ void saveConfig() {
 #define OPTICALPIN 11
 #define IRLED   8 
 
+int StartRange = 0; // range when motor goes active (entry point)
 
 TON grindButton(DEBOUNCETIME);
 TON settingButton(DEBOUNCETIME);
@@ -96,7 +60,6 @@ State idle(NULL);
 State active(activeEnter, NULL, NULL);
 State activeDelay(NULL);
 State deactiveDelay(NULL);
-State settingDelay(NULL);
 FiniteStateMachine stateMachine(idle);
 
 State fadingUp(NULL);
@@ -154,7 +117,7 @@ void setup()
 {
 #ifdef DEBUGSERIAL
     mySerial.begin(9600);
-    // mySerial.println(F("release logic project"));
+    // mySerial.println(F("V1.4"));
 #endif
     pinMode(VBATPIN, INPUT);
     pinMode(BUTTONS, INPUT);
@@ -172,25 +135,12 @@ void setup()
 
     if (!vl.begin())
     {
-#ifdef DEBUGSERIAL
-        mySerial.println(F("sensor failed"));
-#endif
+        // debugPrintln(F("Sensor failed"));
     }
     else
     {
-#ifdef DEBUGSERIAL
-        mySerial.println(F("snsr ok"));
-#endif
+        // debugPrintln(F("Sensor ok"));
     }
-
-    uint8_t range = 100;
-    uint8_t sensorStatus;
-    range = vl.readRange();
-    sensorStatus = vl.readRangeStatus();
-    //    if (sensorStatus == VL6180X_ERROR_NONE)
-    //        prevDistance = range;
-    //    else
-    //        prevDistance = 0;
 
 #ifndef DEBUGSERIAL
     pinMode(MOTOR, OUTPUT);
@@ -211,16 +161,29 @@ void loop()
     buttonADC = analogRead(BUTTONS);
 
     // check SW1 action 
-    grindButton.IN = buttonADC > 400;
+    grindButton.IN = buttonADC > 375;
     grindButton.update();
     grindButtonTrg.IN = grindButton.Q;
     grindButtonTrg.update();
+#ifdef DEBUGSERIAL
+    if (grindButtonTrg.Q)
+    {
+        mySerial.print(F("GRIND KEY "));
+        mySerial.print(millis());
+        mySerial.print(F(" ADC:"));
+        mySerial.println(buttonADC); // */
+    }
+#endif
 
     // check SW2 switch
-    settingButton.IN = buttonADC < 300; // that part
+    settingButton.IN = buttonADC < 30; // that part
     settingButton.update();
     settingButtonTrg.IN = settingButton.Q;
     settingButtonTrg.update();
+#ifdef DEBUGSERIAL
+    if (settingButtonTrg.Q)
+        mySerial.println(F("SETTING KEY"));
+#endif
 
     uint8_t pwmValue;
     if (ledController.isInState(fadingUp))
@@ -248,53 +211,52 @@ void loop()
 
     // every 200ms checking sensor range 
     if (millis() - lastCheckVLTime > 50) // faster here - could you add averaged value so glitches less dominant?
-                                         // Are you thinking it is really reason of current issue?, I thikn sensor value should be pretty accurate
     {
         static uint8_t range = 0;
         static uint8_t last_range = 0;
         static uint8_t sensorStatus;
         const uint8_t SAMPLECNT = 10; // this is essentially calibration
         const uint8_t  THRESHOLD = 10;
-        //        const uint8_t THRESHOLDSPEED = 32;
 
 #ifdef DEBUGSERIAL
         if (isMotorActivated())
-            mySerial.print(F("RUNNING "));
-#endif // DEBUGSERIAL
-
+            mySerial.println(F("RUNNING "));
+#endif
         //SENSE//
         range = vl.readRange();
         sensorStatus = vl.readRangeStatus();
-
         if (sensorStatus != VL6180X_ERROR_NONE)
             range = 200;
+
 #ifdef DEBUGSERIAL
-        //            mySerial.print(F(" R:"));
-        mySerial.print(range);
-#endif // DEBUGSERIAL
-
+        if (actMode)
+        {
+            mySerial.print(F(" R: "));
+            mySerial.print(range);
+        }
+#endif
         avrValue = ((avrValue * 2) + range) / (2 + 1);
-
         if (stateMachine.isInState(idle)) // only recalibrate while idle;
         {
             avrCalibration = ((avrCalibration * SAMPLECNT) + range) / (SAMPLECNT + 1);
             avrCalibration = max(avrCalibration, avrValue); // pushes calibration to max quickly.
         }
 
-        //       avrDelta = (avrDelta * 3 + (range - last_range)) / (3+1);
-        //       avrDelta = 100 + (range - last_range);
-
 #ifdef DEBUGSERIAL
-        mySerial.print(F(" AVG: "));
-        mySerial.print(avrValue);
-        mySerial.print(F(" CAL: "));
-        mySerial.println(avrCalibration);
-#endif // DEBUGSERIAL
+        if (actMode)
+        {
+            mySerial.print(F(" AVG: "));
+            mySerial.print(avrValue);
+            mySerial.print(F(" CAL: "));
+            mySerial.println(avrCalibration);
+        }
+#endif
+
         if ((stateMachine.isInState(active) && actMode == AUTO) && ((avrCalibration - avrValue) <= THRESHOLD))// || range > 190 this will trigger on single bad reading.
         {
 #ifdef DEBUGSERIAL
             mySerial.println(F("OFF(gone)"));
-#endif // DEBUGSERIAL
+#endif
             stateMachine.transitionTo(idle);
             ledController.transitionTo(fadingUp);
         }
@@ -305,20 +267,20 @@ void loop()
             {
 #ifdef DEBUGSERIAL
                 mySerial.println(F("RESET(clear)"));
-#endif // DEBUGSERIAL
+#endif
                 stateMachine.transitionTo(idle);
             }
         }
-        //            stateMachine.transitionTo(idle);
 
-        //DO//
         if (stateMachine.isInState(idle) && stateMachine.timeInCurrentState() > 500) // ignore movement on insertion
         {
             if (avrValue < avrCalibration && (avrCalibration - avrValue) >= THRESHOLD)
             {
 #ifdef DEBUGSERIAL
                 mySerial.println(F("ON(Detect)"));
-#endif // DEBUGSERIAL
+#endif
+                StartRange = avrValue;//record height at which object appears // HERE
+
                 stateMachine.transitionTo(active);
                 ledController.transitionTo(ledIdle); // turn off led if sensor activated
             }
@@ -327,36 +289,37 @@ void loop()
         {
             // deactivating part, after 500ms from active, if
             // decrasing speed is greater than 32, it will be deactivated, in this part, already 500ms delay
-            if (stateMachine.timeInCurrentState() > 650 && (avrValue < last_range - 12))
+            if (stateMachine.timeInCurrentState() > 650 && (avrValue < StartRange - LIFTTURNOFF)) // HERE
             { // is this lifting correct?
-
                 if (actMode == AUTO)
                 {
 #ifdef DEBUGSERIAL
                     mySerial.println(F("OFF(Motion)"));
-#endif // DEBUGSERIAL
+#endif
                     stateMachine.transitionTo(deactiveDelay);
                     ledController.transitionTo(fadingUp);
                 }
             }
         }
-
         last_range = avrValue;
         lastCheckVLTime = millis();
     }
 
-
     if (settingButtonTrg.Q)
     {
-#ifdef DEBUGSERIAL
-        mySerial.println(F("sw2(chg mode)"));
-#endif // DEBUGSERIAL
         if (actMode == AUTO)
             actMode = MANUAL;
         else
             actMode = AUTO;
-        ledController.transitionTo(fadingMax);
-        stateMachine.transitionTo(settingDelay);
+#ifdef DEBUGSERIAL
+        mySerial.print(F("MODE "));
+        if (actMode)
+            mySerial.println(F("AUTO"));
+        else
+            mySerial.println(F("MANUAL"));
+#endif
+        // ledController.transitionTo(fadingMax);
+        stateMachine.transitionTo(idle);
     }
 
     if (stateMachine.isInState(active))
@@ -371,21 +334,10 @@ void loop()
                 motorWorked = true;
             }
             else
-                driveMotor(false);
-
-            if (stateMachine.timeInCurrentState() > NONEACTIONINTERVAL)
             {
+                driveMotor(false);
                 stateMachine.transitionTo(idle);
-                ledController.transitionTo(fadingUp);
-                /*
-                if (motorWorked)
-                stateMachine.transitionTo(activeDelay);
-                else
-                {
-                stateMachine.transitionTo(idle);
-                ledController.transitionTo(fadingUp);
-                }
-                */
+                ledController.transitionTo(fadingDown);
             }
         }
         else if (actMode == AUTO)
@@ -408,18 +360,20 @@ void loop()
             ledController.transitionTo(fadingDown);
         }
     }
-    else if (stateMachine.isInState(settingDelay))
-    {
-        driveMotor(false);
-        if (stateMachine.timeInCurrentState() > SETTINGDELAY)
-        {
-            stateMachine.transitionTo(idle);
-            ledController.transitionTo(fadingDown);
-        }
-    }
     else if (stateMachine.isInState(idle))
     {
         driveMotor(false);
+        if (actMode == MANUAL)
+        {
+            if (grindButton.Q)
+            {
+#ifdef DEBUGSERIAL
+                mySerial.println(F("GRIND "));
+                // mySerial.println(millis());
+#endif
+                stateMachine.transitionTo(active);
+            }
+        }
     }
 
     //
@@ -431,11 +385,7 @@ void driveMotor(bool action)
 {
     motorStatus = action;
 #ifndef DEBUGSERIAL
-    if(action)
-        Palatis::SoftPWM.set(3, 125);
-    else
-        Palatis::SoftPWM.set(3, 0);
-    // digitalWrite(MOTOR, action);
+    digitalWrite(MOTOR, action);
 #endif
 }
 
